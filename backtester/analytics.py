@@ -24,6 +24,13 @@ def compute_stats(trades: List[PutSpread]) -> dict:
     win_rate    = len(wins) / len(pnls) * 100
     avg_win     = float(np.mean(wins))   if wins   else 0.0
     avg_loss    = float(np.mean(losses)) if losses else 0.0
+
+    win_pcts  = [t.realized_pnl / t.account_value_at_entry * 100
+                 for t in trades if t.realized_pnl > 0 and t.account_value_at_entry]
+    loss_pcts = [t.realized_pnl / t.account_value_at_entry * 100
+                 for t in trades if t.realized_pnl <= 0 and t.account_value_at_entry]
+    avg_win_pct  = float(np.mean(win_pcts))  if win_pcts  else 0.0
+    avg_loss_pct = float(np.mean(loss_pcts)) if loss_pcts else 0.0
     gross_profit = sum(wins)
     gross_loss   = abs(sum(losses))
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
@@ -74,6 +81,8 @@ def compute_stats(trades: List[PutSpread]) -> dict:
         "avg_pnl_per_trade":      total_pnl / len(trades),
         "avg_win":                avg_win,
         "avg_loss":               avg_loss,
+        "avg_win_pct":            avg_win_pct,
+        "avg_loss_pct":           avg_loss_pct,
         "profit_factor":          profit_factor,
         "max_drawdown":           max_drawdown,
         "avg_duration_days":      avg_duration,

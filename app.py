@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import BacktestConfig
 from backtester.data_fetcher import fetch_data
 from backtester.engine import run_backtest
-from backtester.analytics import compute_stats, trades_to_dataframe, combine_equity_curves
+from backtester.analytics import compute_stats, trades_to_dataframe
 
 
 # ---------------------------------------------------------------------------
@@ -50,11 +50,7 @@ st.caption(
 with st.sidebar:
     st.header("Strategy Parameters")
 
-    t_col1, t_col2 = st.columns(2)
-    ticker_a = t_col1.text_input("Ticker 1", value="SPY").upper().strip()
-    ticker_b = t_col2.text_input("Ticker 2", value="QQQ").upper().strip()
-    multi_mode = bool(ticker_a and ticker_b and ticker_a != ticker_b)
-    ticker = ticker_a  # backward-compat alias used in single-ticker paths
+    ticker = st.text_input("Ticker", value="SPY").upper().strip()
 
     col1, col2 = st.columns(2)
     start_date = col1.date_input("Start Date", value=pd.Timestamp("2006-04-03"))
@@ -78,7 +74,7 @@ with st.sidebar:
     exit_below_ema200 = st.checkbox(
         "Exit if price crosses below EMA200",
         value=True,
-        help="Close the trade on any day the underlying closes below the 150-day EMA.",
+        help="Close the trade on any day the underlying closes below the 200-day EMA.",
     )
     use_stop_loss = st.checkbox(
         "Exit at stop-loss",
@@ -121,122 +117,72 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 if run_btn:
-    def _make_config(tkr, capital):
-        return BacktestConfig(
-            ticker=tkr,
-            start_date=str(start_date),
-            end_date=str(end_date),
-            ma_type=ma_type,
-            entry_price=entry_price.lower(),
-            entry_dte=entry_dte,
-            exit_dte=exit_dte,
-            profit_target=profit_target,
-            short_put_delta=short_put_delta,
-            spread_width=spread_width,
-            starting_capital=float(capital),
-            deploy_pct=deploy_pct / 100,
-            commission_per_contract=commission,
-            exit_below_ema200=exit_below_ema200,
-            use_stop_loss=use_stop_loss,
-            stop_loss_multiple=stop_loss_multiple,
-        )
-
-    half_capital = float(starting_capital) / 2 if multi_mode else float(starting_capital)
+    config = BacktestConfig(
+        ticker=ticker,
+        start_date=str(start_date),
+        end_date=str(end_date),
+        ma_type=ma_type,
+        entry_price=entry_price.lower(),
+        entry_dte=entry_dte,
+        exit_dte=exit_dte,
+        profit_target=profit_target,
+        short_put_delta=short_put_delta,
+        spread_width=spread_width,
+        starting_capital=float(starting_capital),
+        deploy_pct=deploy_pct / 100,
+        commission_per_contract=commission,
+        exit_below_ema200=exit_below_ema200,
+        use_stop_loss=use_stop_loss,
+        stop_loss_multiple=stop_loss_multiple,
+    )
 
     # --- Fetch data ---
-    with st.spinner(f"Fetching data for {ticker_a}…"):
+    with st.spinner(f"Fetching data for {ticker}…"):
         try:
-            df = fetch_data(ticker_a, str(start_date), str(end_date), 21, 50)
+            df = fetch_data(ticker, str(start_date), str(end_date), 21, 50)
         except Exception as exc:
-            st.error(f"Data fetch failed for {ticker_a}: {exc}")
+            st.error(f"Data fetch failed for {ticker}: {exc}")
             st.stop()
 
-    if multi_mode:
-        with st.spinner(f"Fetching data for {ticker_b}…"):
-            try:
-                df_b = fetch_data(ticker_b, str(start_date), str(end_date), 21, 50)
-            except Exception as exc:
-                st.error(f"Data fetch failed for {ticker_b}: {exc}")
-                st.stop()
-
-    # --- Run backtest(s) ---
-    config = _make_config(ticker_a, half_capital)
+    # --- Run backtest ---
     with st.spinner("Running backtest…"):
-        trades_a, equity_a = run_backtest(df, config)
+        trades, equity_curve = run_backtest(df, config)
 
-    if multi_mode:
-        config_b = _make_config(ticker_b, half_capital)
-        with st.spinner(f"Running backtest for {ticker_b}…"):
-            trades_b, equity_b = run_backtest(df_b, config_b)
-        trades       = sorted(trades_a + trades_b, key=lambda t: t.entry_date)
-        equity_curve = combine_equity_curves(equity_a, equity_b)
-    else:
-        trades       = trades_a
-        equity_curve = equity_a
-
-    # Resolve company names
+    # --- Company name ---
     try:
         import yfinance as yf
-        info_a = yf.Ticker(ticker_a).info
-        name_a = info_a.get("longName") or info_a.get("shortName") or ticker_a
+        info = yf.Ticker(ticker).info
+        name = info.get("longName") or info.get("shortName") or ticker
     except Exception:
-        name_a = ticker_a
+        name = ticker
 
-    if multi_mode:
-        try:
-            info_b = yf.Ticker(ticker_b).info
-            name_b = info_b.get("longName") or info_b.get("shortName") or ticker_b
-        except Exception:
-            name_b = ticker_b
-        st.markdown(f"## {name_a} ({ticker_a}) + {name_b} ({ticker_b}) — 50/50 Portfolio")
-    else:
-        st.markdown(f"## {name_a} ({ticker_a})")
+    st.markdown(f"## {name} ({ticker})")
 
     if not trades:
         st.warning("No trades were generated. Try a wider date range or different parameters.")
         st.stop()
 
     stats     = compute_stats(trades)
-    if multi_mode:
-        df_a_log  = trades_to_dataframe(trades_a, ticker=ticker_a)
-        df_b_log  = trades_to_dataframe(trades_b, ticker=ticker_b)
-        trades_df = (pd.concat([df_a_log, df_b_log])
-                     .sort_values("Entry Date").reset_index(drop=True))
-        trades_df["#"] = range(1, len(trades_df) + 1)
-    else:
-        trades_df = trades_to_dataframe(trades_a)
+    trades_df = trades_to_dataframe(trades)
 
     # -----------------------------------------------------------------------
     # KPI metrics row
     # -----------------------------------------------------------------------
 
-    # Date range: use earliest entry and latest exit across all trades
-    first_entry = pd.Timestamp(min(t.entry_date for t in trades))
-    last_exit   = pd.Timestamp(max(t.exit_date  for t in trades))
-    years       = stats["years"]
+    first_entry  = pd.Timestamp(min(t.entry_date for t in trades))
+    last_exit    = pd.Timestamp(max(t.exit_date  for t in trades))
+    years        = stats["years"]
+    total_capital = float(starting_capital)
 
     # --- Buy & Hold ---
-    def _bh_metrics(df_src, capital):
-        idx0 = df_src.index.searchsorted(first_entry)
-        idx1 = min(df_src.index.searchsorted(last_exit), len(df_src) - 1)
-        entry_px = float(df_src.iloc[idx0]["close"])
-        exit_px  = float(df_src.iloc[idx1]["close"])
-        shares   = math.floor(capital / entry_px)
-        cash     = capital - shares * entry_px
-        final    = exit_px * shares + cash
-        equity   = df_src["close"].loc[first_entry:] * shares + cash
-        return shares, cash, final, equity
-
-    total_capital = float(starting_capital)
-    if multi_mode:
-        bh_shares_a, bh_cash_a, bh_final_a, bh_eq_a = _bh_metrics(df,   half_capital)
-        bh_shares_b, bh_cash_b, bh_final_b, bh_eq_b = _bh_metrics(df_b, half_capital)
-        bh_final    = bh_final_a + bh_final_b
-        bh_equity   = combine_equity_curves(bh_eq_a, bh_eq_b)
-        # For single-ticker chart B&H overlay we keep ticker_a figures
-        bh_shares, bh_cash = bh_shares_a, bh_cash_a
-    else:
-        bh_shares, bh_cash, bh_final, bh_equity = _bh_metrics(df, total_capital)
+    idx0     = df.index.searchsorted(first_entry)
+    idx1     = min(df.index.searchsorted(last_exit), len(df) - 1)
+    entry_px = float(df.iloc[idx0]["close"])
+    exit_px  = float(df.iloc[idx1]["close"])
+    bh_shares = math.floor(total_capital / entry_px)
+    bh_cash   = total_capital - bh_shares * entry_px
+    bh_final  = exit_px * bh_shares + bh_cash
+    bh_equity = df["close"].loc[first_entry:] * bh_shares + bh_cash
 
     strat_final = equity_curve.iloc[-1]
     strat_cagr  = (strat_final / total_capital) ** (1 / years) - 1 if years > 0 else 0.0
@@ -257,32 +203,22 @@ if run_btn:
     )
 
     # B&H max drawdown
-    bh_eq_arr    = bh_equity.values
-    bh_peak      = np.maximum.accumulate(bh_eq_arr)
+    bh_eq_arr     = bh_equity.values
+    bh_peak       = np.maximum.accumulate(bh_eq_arr)
     bh_max_dd_pct = float(np.min((bh_eq_arr - bh_peak) / bh_peak))
 
-    # IV source notices
+    # IV source notice
     from backtester.data_fetcher import CBOE_VOL_INDEX, HV_PREMIUM, DEFAULT_HV_PREMIUM
-    def _iv_notice(tkr, df_src):
-        iv_src = df_src["iv_source"].iloc[-1]
-        if iv_src == "cboe":
-            cboe_sym = CBOE_VOL_INDEX.get(tkr.upper(), "")
-            st.success(f"**{tkr} IV source:** CBOE volatility index `{cboe_sym}` — high accuracy.")
-        else:
-            premium = HV_PREMIUM.get(tkr.upper(), DEFAULT_HV_PREMIUM)
-            st.warning(
-                f"**{tkr} IV source:** Calibrated HV (30-day EWMA × {premium:.2f}×) — "
-                f"approximate. Consider OptionsDX or ORATS for better accuracy."
-            )
-
-    if multi_mode:
-        iv_col1, iv_col2 = st.columns(2)
-        with iv_col1:
-            _iv_notice(ticker_a, df)
-        with iv_col2:
-            _iv_notice(ticker_b, df_b)
+    iv_src = df["iv_source"].iloc[-1]
+    if iv_src == "cboe":
+        cboe_sym = CBOE_VOL_INDEX.get(ticker.upper(), "")
+        st.success(f"**{ticker} IV source:** CBOE volatility index `{cboe_sym}` — high accuracy.")
     else:
-        _iv_notice(ticker_a, df)
+        premium = HV_PREMIUM.get(ticker.upper(), DEFAULT_HV_PREMIUM)
+        st.warning(
+            f"**{ticker} IV source:** Calibrated HV (30-day EWMA × {premium:.2f}×) — "
+            f"approximate. Consider OptionsDX or ORATS for better accuracy."
+        )
 
     st.divider()
 
@@ -300,18 +236,20 @@ if run_btn:
     # Row 2 — trade quality + buy & hold
     c7, c8, c9, c10, c11, c12 = st.columns(6)
     c7.metric("Win Rate",                f"{stats['win_rate']:.1f}%")
-    c8.metric("Avg Win",                f"${stats['avg_win']:,.0f}")
-    c9.metric("Avg Loss",               f"${stats['avg_loss']:,.0f}")
-    c10.metric("Buy & Hold Acct Value", f"${bh_final:,.0f}")
-    c11.metric("Buy & Hold CAGR",       f"{bh_cagr:.1%}")
-    c12.metric("Buy & Hold Max DD %",   f"{bh_max_dd_pct:.1%}")
+    c8.metric("Avg Win $",              f"${stats['avg_win']:,.0f}")
+    c9.metric("Avg Loss $",             f"${stats['avg_loss']:,.0f}")
+    c10.metric("Avg Win %",             f"{stats['avg_win_pct']:.2f}%")
+    c11.metric("Avg Loss %",            f"{stats['avg_loss_pct']:.2f}%")
+    c12.metric("Buy & Hold CAGR",       f"{bh_cagr:.1%}")
 
     st.write("")
 
-    # Row 3 — single-trade max loss
-    c13, c14, c15, c16, c17, c18 = st.columns(6)
-    c13.metric("Max Loss $",  f"${max_loss_usd:,.0f}")
-    c14.metric("Max Loss %",  f"{max_loss_pct:.1%}")
+    # Row 2b — buy & hold + max loss
+    c7b, c8b, c9b, c10b, c11b, c12b = st.columns(6)
+    c7b.metric("Buy & Hold Acct Value", f"${bh_final:,.0f}")
+    c8b.metric("Buy & Hold Max DD %",   f"{bh_max_dd_pct:.1%}")
+    c9b.metric("Max Loss $",            f"${max_loss_usd:,.0f}")
+    c10b.metric("Max Loss %",           f"{max_loss_pct:.1%}")
 
     # -----------------------------------------------------------------------
     # Charts
@@ -322,11 +260,10 @@ if run_btn:
     cum_pnl     = stats["cum_pnl"]
 
     # ---- Chart 0: Account value growth — Strategy vs Buy & Hold ----
-    bh_label = f"{ticker_a} + {ticker_b} Buy & Hold (50/50)" if multi_mode else f"{ticker_a} Buy & Hold"
     fig_equity = go.Figure()
     fig_equity.add_trace(go.Scatter(
         x=bh_equity.index, y=bh_equity.values,
-        mode="lines", name=bh_label,
+        mode="lines", name=f"{ticker} Buy & Hold",
         line=dict(color="steelblue", width=2),
     ))
     fig_equity.add_trace(go.Scatter(
@@ -364,35 +301,34 @@ if run_btn:
     st.plotly_chart(fig_equity, use_container_width=True)
 
     # ---- Chart 1: TradingView Lightweight Charts ----
-    def build_tv_html(tkr, df_src, trades_src, cfg):
-        mp = cfg.ma_type.lower()
-        ohlcv_data = [
-            {"time": d.strftime("%Y-%m-%d"),
-             "open":  round(float(r["open"]),  4),
-             "high":  round(float(r["high"]),  4),
-             "low":   round(float(r["low"]),   4),
-             "close": round(float(r["close"]), 4)}
-            for d, r in df_src.iterrows()
-        ]
-        volume_data = [
-            {"time":  d.strftime("%Y-%m-%d"),
-             "value": round(float(r["volume"]), 0),
-             "color": "#26a69a" if float(r["close"]) >= float(r["open"]) else "#ef5350"}
-            for d, r in df_src.iterrows()
-        ]
-        ema_fast_data = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}{cfg.ema_fast}"]), 4)} for d, r in df_src.iterrows()]
-        ema_slow_data = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}{cfg.ema_slow}"]), 4)} for d, r in df_src.iterrows()]
-        ema100_data   = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}100"]), 4)} for d, r in df_src.iterrows()]
-        ema200_data   = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}200"]), 4)} for d, r in df_src.iterrows()]
+    mp = config.ma_type.lower()
+    ohlcv_data = [
+        {"time": d.strftime("%Y-%m-%d"),
+         "open":  round(float(r["open"]),  4),
+         "high":  round(float(r["high"]),  4),
+         "low":   round(float(r["low"]),   4),
+         "close": round(float(r["close"]), 4)}
+        for d, r in df.iterrows()
+    ]
+    volume_data = [
+        {"time":  d.strftime("%Y-%m-%d"),
+         "value": round(float(r["volume"]), 0),
+         "color": "#26a69a" if float(r["close"]) >= float(r["open"]) else "#ef5350"}
+        for d, r in df.iterrows()
+    ]
+    ema_fast_data = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}{config.ema_fast}"]), 4)} for d, r in df.iterrows()]
+    ema_slow_data = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}{config.ema_slow}"]), 4)} for d, r in df.iterrows()]
+    ema100_data   = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}100"]), 4)} for d, r in df.iterrows()]
+    ema200_data   = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(r[f"{mp}200"]), 4)} for d, r in df.iterrows()]
 
-        ohlcv_times  = {r["time"] for r in ohlcv_data}
-        entry_dates_ = [pd.Timestamp(t.entry_date) for t in trades_src]
-        exit_dates_  = [pd.Timestamp(t.exit_date)  for t in trades_src]
-        entry_markers = [{"time": d.strftime("%Y-%m-%d"), "position": "belowBar", "color": "#26a69a", "shape": "arrowUp",   "text": "Entry"} for d in entry_dates_ if d.strftime("%Y-%m-%d") in ohlcv_times]
-        exit_markers  = [{"time": d.strftime("%Y-%m-%d"), "position": "aboveBar", "color": "#ef5350", "shape": "arrowDown", "text": "Exit"}  for d in exit_dates_  if d.strftime("%Y-%m-%d") in ohlcv_times]
-        markers_data  = sorted(entry_markers + exit_markers, key=lambda m: m["time"])
+    ohlcv_times   = {r["time"] for r in ohlcv_data}
+    entry_dates_  = [pd.Timestamp(t.entry_date) for t in trades]
+    exit_dates_tv = [pd.Timestamp(t.exit_date)  for t in trades]
+    entry_markers = [{"time": d.strftime("%Y-%m-%d"), "position": "belowBar", "color": "#26a69a", "shape": "arrowUp",   "text": "Entry"} for d in entry_dates_  if d.strftime("%Y-%m-%d") in ohlcv_times]
+    exit_markers  = [{"time": d.strftime("%Y-%m-%d"), "position": "aboveBar", "color": "#ef5350", "shape": "arrowDown", "text": "Exit"}  for d in exit_dates_tv if d.strftime("%Y-%m-%d") in ohlcv_times]
+    markers_data  = sorted(entry_markers + exit_markers, key=lambda m: m["time"])
 
-        return f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    tv_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <style>
   html,body{{margin:0;padding:0;background:#131722;}}
   #chart-container{{position:relative;width:100%;}}
@@ -406,12 +342,12 @@ if run_btn:
 </style></head><body>
 <div id="chart-container">
   <div id="legend">
-    <span style="font-weight:700;font-size:13px;">{tkr}</span>
+    <span style="font-weight:700;font-size:13px;">{ticker}</span>
     <span class="leg-item">O&nbsp;<span id="val-o" class="val">—</span>&nbsp;H&nbsp;<span id="val-h" class="val">—</span>&nbsp;L&nbsp;<span id="val-l" class="val">—</span>&nbsp;C&nbsp;<span id="val-c" class="val">—</span></span>
-    <span class="leg-item"><span class="leg-swatch" style="background:#2962ff"></span>{cfg.ma_type}{cfg.ema_fast}&nbsp;<span id="val-ef" class="val" style="color:#2962ff">—</span></span>
-    <span class="leg-item"><span class="leg-swatch" style="background:#ff9800"></span>{cfg.ma_type}{cfg.ema_slow}&nbsp;<span id="val-es" class="val" style="color:#ff9800">—</span></span>
-    <span class="leg-item"><span class="leg-swatch" style="background:#ab47bc"></span>{cfg.ma_type}100&nbsp;<span id="val-e100" class="val" style="color:#ab47bc">—</span></span>
-    <span class="leg-item"><span class="leg-swatch" style="background:#ff7043"></span>{cfg.ma_type}200&nbsp;<span id="val-e200" class="val" style="color:#ff7043">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#2962ff"></span>{config.ma_type}{config.ema_fast}&nbsp;<span id="val-ef" class="val" style="color:#2962ff">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#ff9800"></span>{config.ma_type}{config.ema_slow}&nbsp;<span id="val-es" class="val" style="color:#ff9800">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#ab47bc"></span>{config.ma_type}100&nbsp;<span id="val-e100" class="val" style="color:#ab47bc">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#ff7043"></span>{config.ma_type}200&nbsp;<span id="val-e200" class="val" style="color:#ff7043">—</span></span>
     <span class="leg-item" style="color:#26a69a">▲ Entry</span>
     <span class="leg-item" style="color:#ef5350">▼ Exit</span>
   </div>
@@ -465,14 +401,7 @@ chart.subscribeCrosshairMove(param=>{{
 window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
 </script></body></html>"""
 
-    if multi_mode:
-        tab_a, tab_b = st.tabs([f"📈 {ticker_a}", f"📈 {ticker_b}"])
-        with tab_a:
-            components.html(build_tv_html(ticker_a, df, trades_a, config), height=530, scrolling=False)
-        with tab_b:
-            components.html(build_tv_html(ticker_b, df_b, trades_b, config_b), height=530, scrolling=False)
-    else:
-        components.html(build_tv_html(ticker_a, df, trades_a, config), height=530, scrolling=False)
+    components.html(tv_html, height=530, scrolling=False)
 
     # ---- Chart 2: Cumulative P&L + per-trade bars ----
     col_l, col_r = st.columns([2, 1])
@@ -538,6 +467,7 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
                 "Total Trades", "Winning Trades", "Losing Trades",
                 "Total P&L", "Win Rate",
                 "Avg P&L / Trade", "Avg Winning Trade", "Avg Losing Trade",
+                "Avg Win %", "Avg Loss %",
                 "Profit Factor", "Sharpe Ratio", "Max DD $", "Max DD %", "Max Loss $", "Max Loss %", "Avg Trade Duration",
             ],
             "Value": [
@@ -549,6 +479,8 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
                 f"${stats['avg_pnl_per_trade']:.0f}",
                 f"${stats['avg_win']:.0f}",
                 f"${stats['avg_loss']:.0f}",
+                f"{stats['avg_win_pct']:.2f}%",
+                f"{stats['avg_loss_pct']:.2f}%",
                 f"{stats['profit_factor']:.2f}",
                 f"{stats['sharpe']:.2f}",
                 f"${strat_max_dd_usd:,.0f}",
@@ -575,7 +507,7 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
 
     styled = (
         trades_df.style
-        .applymap(colour_pnl, subset=["P&L ($)", "P&L (% Acct)"])
+        .map(colour_pnl, subset=["P&L ($)", "P&L (% Acct)"])
         .format({"P&L ($)": "${:,.2f}", "P&L (% Acct)": "{:.2f}"})
     )
     log_height = min(len(trades_df), 20) * 35 + 38
@@ -585,7 +517,7 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
     st.download_button(
         "⬇ Download Trade Log (CSV)",
         data=csv,
-        file_name=f"{ticker_a}{'_'+ticker_b if multi_mode else ''}_bull_put_spread_backtest.csv",
+        file_name=f"{ticker}_bull_put_spread_backtest.csv",
         mime="text/csv",
     )
 
