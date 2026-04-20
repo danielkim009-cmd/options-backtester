@@ -24,6 +24,7 @@ from config import BacktestConfig
 from backtester.data_fetcher import fetch_data
 from backtester.engine import run_backtest
 from backtester.analytics import compute_stats, trades_to_dataframe
+from backtester.report import generate_html_report
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +432,7 @@ chart.subscribeCrosshairMove(param=>{{
 window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
 </script></body></html>"""
 
+    st.session_state["bt_results"]["eq_html"] = eq_html
     components.html(eq_html, height=420, scrolling=False)
 
     # ---- Chart 1: TradingView Lightweight Charts ----
@@ -534,6 +536,7 @@ chart.subscribeCrosshairMove(param=>{{
 window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
 </script></body></html>"""
 
+    st.session_state["bt_results"]["tv_html"] = tv_html
     components.html(tv_html, height=530, scrolling=False)
 
     # ---- Chart 2: Cumulative P&L + per-trade bars ----
@@ -611,6 +614,7 @@ chart.subscribeCrosshairMove(param=>{{
 window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
 </script></body></html>"""
 
+        st.session_state["bt_results"]["cum_html"] = cum_html
         components.html(cum_html, height=360, scrolling=False)
 
     with col_r:
@@ -747,6 +751,15 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
                 pass
         return ""
 
+    st.session_state["bt_results"]["annual_df"] = annual
+    st.session_state["bt_results"].update(
+        strat_final=strat_final, strat_cagr=strat_cagr,
+        bh_cagr=bh_cagr, bh_final=bh_final,
+        strat_max_dd_usd=strat_max_dd_usd, strat_max_dd_pct=strat_max_dd_pct,
+        bh_max_dd_pct=bh_max_dd_pct,
+        max_loss_usd=max_loss_usd, max_loss_pct=max_loss_pct,
+    )
+
     styled_annual = annual.style.map(colour_annual_pnl, subset=["Annual P&L ($)", "P&L %", "Avg Win %", "Avg Loss %", bh_col, "Alpha %"])
     st.dataframe(styled_annual, use_container_width=True, hide_index=True)
 
@@ -798,12 +811,46 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
     st.dataframe(styled, use_container_width=True, hide_index=True, height=log_height)
 
     csv = filtered_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
+    col_csv, col_html = st.columns([1, 1])
+    col_csv.download_button(
         "⬇ Download Trade Log (CSV)",
         data=csv,
         file_name=f"{ticker}_bull_put_spread_backtest.csv",
         mime="text/csv",
     )
+
+    # HTML report — only available once all charts have been rendered
+    _r = st.session_state["bt_results"]
+    if all(k in _r for k in ("eq_html", "tv_html", "cum_html", "annual_df")):
+        html_report = generate_html_report(
+            ticker=ticker,
+            name=name,
+            config=config,
+            stats=stats,
+            trades_df=trades_df,
+            annual_df=_r["annual_df"],
+            starting_capital=starting_capital,
+            strat_final=_r["strat_final"],
+            strat_cagr=_r["strat_cagr"],
+            bh_cagr=_r["bh_cagr"],
+            bh_final=_r["bh_final"],
+            strat_max_dd_usd=_r["strat_max_dd_usd"],
+            strat_max_dd_pct=_r["strat_max_dd_pct"],
+            bh_max_dd_pct=_r["bh_max_dd_pct"],
+            max_loss_usd=_r["max_loss_usd"],
+            max_loss_pct=_r["max_loss_pct"],
+            pnls=stats["pnls"],
+            exit_reasons=stats["exit_reasons"],
+            eq_html=_r["eq_html"],
+            tv_html=_r["tv_html"],
+            cum_html=_r["cum_html"],
+        )
+        col_html.download_button(
+            "⬇ Download HTML Report",
+            data=html_report.encode("utf-8"),
+            file_name=f"{ticker}_backtest_report.html",
+            mime="text/html",
+        )
 
 elif "bt_results" not in st.session_state:
     st.info("Configure parameters in the sidebar and click **▶ Run Backtest** to begin.")
