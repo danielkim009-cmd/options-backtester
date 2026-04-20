@@ -30,30 +30,42 @@ def add_signals(
     entry_price: str = "close",
 ) -> pd.DataFrame:
     """
-    Add a 'signal' column that is True on the FIRST day of a pullback episode:
-      1. Entry price < fast MA  (dips into the pullback zone)
-      2. Entry price > slow MA  (stays above MA50)
-      3. Fast MA > slow MA      (uptrend confirmed)
-      4. Slow MA > MA100        (broader uptrend confirmed)
+    Add a 'signal' column that is True when EITHER entry condition is met.
 
-    entry_price: 'close' uses the closing price; 'low' uses the intraday low.
-    "First day" means condition was NOT met the prior trading day, preventing
-    repeated entries during a multi-day pullback.
+    Condition A — Pullback zone (first day only):
+      1. Intraday low <= fast MA (low touches or dips below EMA21)
+      2. Entry price > slow MA   (stays above MA50)
+      3. Fast MA > slow MA       (uptrend confirmed)
+      4. Slow MA > MA100         (broader uptrend confirmed)
+
+    Condition B — EMA200 crossover (first day only):
+      1. Close crosses above EMA200 (previous close was at or below EMA200)
+      2. EMA100 > EMA200            (medium-term MA already above long-term trend)
+      3. Intraday high > EMA21      (stock pushed above the fast MA intraday)
     """
     df = df.copy()
     p     = ma_type.lower()
     ef    = f"{p}{ema_fast}"
     es    = f"{p}{ema_slow}"
+    e200  = f"{p}200"
     price = df[entry_price]
 
+    # Condition A: pullback zone — first bar only
+    # Use intraday low for the EMA21 touch so that even a wick into the zone qualifies.
     in_zone = (
-        (price < df[ef]) &         # entry price dips below fast MA
-        (price > df[es]) &         # entry price stays above slow MA
-        (df[ef] > df[es])    &     # fast MA above slow MA
-        (df[es] > df[f"{p}100"])   # slow MA above MA100
+        (df["low"] <= df[ef]) &        # low touches or dips below EMA21 intraday
+        (price > df[es]) &             # entry price stays above EMA50
+        (df[ef] > df[es]) &
+        (df[es] > df[f"{p}100"])
     )
-    # Only signal on the first bar that enters the zone
-    df["signal"] = in_zone & ~in_zone.shift(1).astype(bool).fillna(False)
+    signal_a = in_zone & ~in_zone.shift(1).astype(bool).fillna(False)
+
+    # Condition B: close crosses above EMA200, with EMA100 already above EMA200
+    above_e200   = df["close"] > df[e200]
+    crossed_e200 = above_e200 & ~above_e200.shift(1).astype(bool).fillna(False)
+    signal_b = crossed_e200 & (df[f"{p}100"] > df[e200]) & (df["high"] > df[ef])
+
+    df["signal"] = signal_a | signal_b
     return df
 
 
@@ -187,7 +199,7 @@ def check_exit(
     current_date: pd.Timestamp,
     config: BacktestConfig,
     stock_price: float = 0.0,
-    ema200: float = 0.0,
+    exit_ema: float = 0.0,
 ) -> Optional[str]:
     """Return exit reason string, or None if trade should remain open."""
     dte = (trade.expiry_date - current_date).days
@@ -201,8 +213,8 @@ def check_exit(
     if trade.current_spread_value <= buyback_target:
         return "profit_target"
 
-    if config.exit_below_ema200 and ema200 > 0 and stock_price < ema200:
-        return "below_ema200"
+    if config.exit_below_ema and exit_ema > 0 and stock_price < exit_ema:
+        return f"below_ema{config.exit_ema_period}"
 
     if config.use_stop_loss:
         stop_trigger = trade.net_credit * (1.0 + config.stop_loss_multiple)
@@ -257,11 +269,11 @@ def run_backtest(
         iv    = float(row["iv"])
 
         # --- update & check exits first ---
-        ema200 = float(row.get(f"{config.ma_type.lower()}200", 0.0))
+        exit_ema_val = float(row.get(f"{config.ma_type.lower()}{config.exit_ema_period}", 0.0))
         to_close = []
         for trade in open_positions:
             update_trade(trade, date, price, iv, config)
-            reason = check_exit(trade, date, config, stock_price=price, ema200=ema200)
+            reason = check_exit(trade, date, config, stock_price=price, exit_ema=exit_ema_val)
             if reason:
                 close_trade(trade, date, reason, config)
                 account_value += trade.realized_pnl

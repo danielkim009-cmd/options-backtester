@@ -38,7 +38,8 @@ st.set_page_config(
 
 st.title("📉 Bull Put Spread Backtester")
 st.caption(
-    "Entry: low < EMA21, low > EMA50, EMA21 > EMA50, EMA50 > EMA100 (first day of pullback zone)  •  "
+    "Entry A: low ≤ EMA21, price > EMA50, EMA21 > EMA50, EMA50 > EMA100 (first day of pullback zone)  •  "
+    "Entry B: close crosses above EMA200, EMA100 > EMA200, high > EMA21  •  "
     "Exit: profit target **or** DTE stop **or** price below EMA200 (optional)  •  "
     "IV proxy: VIX (SPY) / 30-day HV×1.1 (individual stocks)"
 )
@@ -71,10 +72,16 @@ with st.sidebar:
     )
     entry_dte = st.slider("Entry DTE (target)", 30, 90, 45)
     exit_dte  = st.slider("Exit DTE (time-stop)", 1, 30, 7)
-    exit_below_ema200 = st.checkbox(
-        "Exit if price crosses below EMA200",
+    exit_below_ema = st.checkbox(
+        "Exit if price crosses below EMA",
         value=True,
-        help="Close the trade on any day the underlying closes below the 200-day EMA.",
+        help="Close the trade on any day the underlying closes below the specified EMA.",
+    )
+    exit_ema_period = st.number_input(
+        "Exit EMA Period",
+        min_value=10, max_value=500, value=150, step=10,
+        disabled=not exit_below_ema,
+        help="EMA period for the exit condition above.",
     )
     use_stop_loss = st.checkbox(
         "Exit at stop-loss",
@@ -131,7 +138,8 @@ if run_btn:
         starting_capital=float(starting_capital),
         deploy_pct=deploy_pct / 100,
         commission_per_contract=commission,
-        exit_below_ema200=exit_below_ema200,
+        exit_below_ema=exit_below_ema,
+        exit_ema_period=exit_ema_period,
         use_stop_loss=use_stop_loss,
         stop_loss_multiple=stop_loss_multiple,
     )
@@ -139,7 +147,8 @@ if run_btn:
     # --- Fetch data ---
     with st.spinner(f"Fetching data for {ticker}…"):
         try:
-            df = fetch_data(ticker, str(start_date), str(end_date), 21, 50)
+            df = fetch_data(ticker, str(start_date), str(end_date), 21, 50,
+                           extra_periods=[exit_ema_period])
         except Exception as exc:
             st.error(f"Data fetch failed for {ticker}: {exc}")
             st.stop()
@@ -157,6 +166,42 @@ if run_btn:
         name = ticker
 
     st.markdown(f"## {name} ({ticker})")
+
+    ma = config.ma_type
+    ef = config.ema_fast
+    es = config.ema_slow
+    ep = config.entry_price.capitalize()
+    exit_ema_line = (
+        f"close below {ma}{config.exit_ema_period}"
+        if config.exit_below_ema else None
+    )
+    sl_line = (
+        f"stop-loss at {config.stop_loss_multiple:.1f}× credit received"
+        if config.use_stop_loss else None
+    )
+    exit_parts = [
+        f"profit target ≥ {int(config.profit_target * 100)}% of credit",
+        f"DTE ≤ {config.exit_dte}",
+    ]
+    if exit_ema_line:
+        exit_parts.append(exit_ema_line)
+    if sl_line:
+        exit_parts.append(sl_line)
+
+    st.markdown(
+        f"**Entry A ({ep}):** {ep} ≤ {ma}{ef} &nbsp;•&nbsp; "
+        f"price > {ma}{es} &nbsp;•&nbsp; "
+        f"{ma}{ef} > {ma}{es} &nbsp;•&nbsp; "
+        f"{ma}{es} > {ma}100 &nbsp;*(first day of pullback zone)*"
+    )
+    st.markdown(
+        f"**Entry B ({ep}):** close crosses above {ma}200 &nbsp;•&nbsp; "
+        f"{ma}100 > {ma}200 &nbsp;•&nbsp; "
+        f"high > {ma}{ef}"
+    )
+    st.markdown(
+        "**Exit:** " + " &nbsp;•&nbsp; ".join(exit_parts)
+    )
 
     if not trades:
         st.warning("No trades were generated. Try a wider date range or different parameters.")
@@ -259,46 +304,116 @@ if run_btn:
     pnls        = stats["pnls"]
     cum_pnl     = stats["cum_pnl"]
 
-    # ---- Chart 0: Account value growth — Strategy vs Buy & Hold ----
-    fig_equity = go.Figure()
-    fig_equity.add_trace(go.Scatter(
-        x=bh_equity.index, y=bh_equity.values,
-        mode="lines", name=f"{ticker} Buy & Hold",
-        line=dict(color="steelblue", width=2),
-    ))
-    fig_equity.add_trace(go.Scatter(
-        x=equity_curve.index, y=equity_curve.values,
-        mode="lines", name="Bull Put Spread Strategy",
-        line=dict(color="green", width=2),
-    ))
-    fig_equity.add_hline(
-        y=total_capital, line_color="grey",
-        line_width=0.8, line_dash="dash",
-    )
-    fig_equity.update_layout(
-        title=f"Account Value Growth — Starting Capital ${total_capital:,.0f}",
-        height=380,
-        xaxis=dict(
-            title="Date",
-            rangeslider=dict(visible=True, thickness=0.06),
-            rangeselector=dict(
-                buttons=[
-                    dict(count=1,  label="1M", step="month", stepmode="backward"),
-                    dict(count=3,  label="3M", step="month", stepmode="backward"),
-                    dict(count=6,  label="6M", step="month", stepmode="backward"),
-                    dict(count=1,  label="1Y", step="year",  stepmode="backward"),
-                    dict(count=2,  label="2Y", step="year",  stepmode="backward"),
-                    dict(step="all", label="All"),
-                ],
-                bgcolor="#f0f2f6",
-                activecolor="#4c78a8",
-            ),
-        ),
-        yaxis_title="Account Value ($)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        margin=dict(t=50, b=10),
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
+    # ---- Chart 0: Account value growth — TradingView (log scale) ----
+    def _resample_tv(series, freq):
+        """Resample series to freq ('W'/'ME'/'YE'), forward-fill gaps, return TV list."""
+        daily = series.resample("D").last().ffill()
+        try:
+            resampled = daily.resample(freq).last().dropna()
+        except ValueError:
+            # older pandas: ME→M, YE→A
+            fallback = {"ME": "M", "YE": "A"}.get(freq, freq)
+            resampled = daily.resample(fallback).last().dropna()
+        seen = {}
+        for d, v in resampled.items():
+            seen[d.strftime("%Y-%m-%d")] = round(float(v), 2)
+        return [{"time": t, "value": v} for t, v in sorted(seen.items())]
+
+    eq_weekly  = _resample_tv(equity_curve, "W")
+    eq_monthly = _resample_tv(equity_curve, "ME")
+    eq_yearly  = _resample_tv(equity_curve, "YE")
+    bh_weekly  = _resample_tv(bh_equity, "W")
+    bh_monthly = _resample_tv(bh_equity, "ME")
+    bh_yearly  = _resample_tv(bh_equity, "YE")
+
+    eq_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<style>
+  html,body{{margin:0;padding:0;background:#131722;}}
+  #eq-container{{position:relative;width:100%;}}
+  #eq-legend{{position:absolute;top:8px;left:12px;z-index:10;
+    font-family:-apple-system,BlinkMacSystemFont,'Trebuchet MS',sans-serif;
+    font-size:12px;color:#d1d4dc;background:rgba(19,23,34,0.88);
+    padding:5px 10px;border-radius:4px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;pointer-events:none;}}
+  .leg-item{{display:flex;align-items:center;gap:5px;white-space:nowrap;}}
+  .leg-swatch{{width:14px;height:3px;border-radius:2px;display:inline-block;}}
+  .val{{font-weight:600;margin-left:2px;}}
+  #eq-aggbtns{{position:absolute;top:8px;right:12px;z-index:10;display:flex;gap:4px;}}
+  .abtn{{background:#1e222d;color:#d1d4dc;border:1px solid #2a2e39;border-radius:3px;
+    padding:2px 8px;font-size:11px;cursor:pointer;font-family:inherit;}}
+  .abtn:hover,.abtn.active{{background:#2962ff;color:#fff;border-color:#2962ff;}}
+</style></head><body>
+<div id="eq-container">
+  <div id="eq-legend">
+    <span style="font-weight:700;font-size:13px;">Account Value Growth &nbsp;|&nbsp; Starting ${total_capital:,.0f} &nbsp;|&nbsp; Log Scale</span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#26a69a"></span>Strategy&nbsp;<span id="eq-strat" class="val" style="color:#26a69a">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#4c78a8"></span>{ticker} B&amp;H&nbsp;<span id="eq-bh" class="val" style="color:#4c78a8">—</span></span>
+  </div>
+  <div id="eq-aggbtns">
+    <button class="abtn" onclick="setAgg('W',this)">Weekly</button>
+    <button class="abtn active" onclick="setAgg('M',this)">Monthly</button>
+    <button class="abtn" onclick="setAgg('Y',this)">Yearly</button>
+  </div>
+  <div id="eq-chart"></div>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const datasets={{
+  W:{{strat:{json.dumps(eq_weekly)}, bh:{json.dumps(bh_weekly)}}},
+  M:{{strat:{json.dumps(eq_monthly)},bh:{json.dumps(bh_monthly)}}},
+  Y:{{strat:{json.dumps(eq_yearly)}, bh:{json.dumps(bh_yearly)}}},
+}};
+const W=document.documentElement.clientWidth;
+const chart=LightweightCharts.createChart(document.getElementById('eq-chart'),{{
+  width:W,height:400,
+  layout:{{background:{{type:'solid',color:'#131722'}},textColor:'#d1d4dc',fontSize:12}},
+  grid:{{vertLines:{{color:'#1e222d'}},horzLines:{{color:'#1e222d'}}}},
+  crosshair:{{mode:LightweightCharts.CrosshairMode.Normal}},
+  rightPriceScale:{{borderColor:'#2a2e39',mode:LightweightCharts.PriceScaleMode.Logarithmic}},
+  timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:false,rightOffset:5,barSpacing:10,minBarSpacing:2}},
+  handleScroll:{{mouseWheel:true,pressedMouseMove:true}},
+  handleScale:{{mouseWheel:true,pinch:true}},
+}});
+
+const stratSeries=chart.addLineSeries({{
+  color:'#26a69a',lineWidth:2,
+  priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:true,
+}});
+stratSeries.createPriceLine({{
+  price:{total_capital},color:'#888888',lineWidth:1,
+  lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Start',
+}});
+
+const bhSeries=chart.addLineSeries({{
+  color:'#4c78a8',lineWidth:2,
+  priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:true,
+}});
+
+let stratMap={{}}, bhMap={{}};
+function fmtDollar(v){{return v!==undefined?'$'+v.toLocaleString('en-US',{{minimumFractionDigits:0,maximumFractionDigits:0}}):'—';}}
+
+function setAgg(key,btn){{
+  document.querySelectorAll('.abtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const d=datasets[key];
+  stratSeries.setData(d.strat);
+  bhSeries.setData(d.bh);
+  stratMap={{}};d.strat.forEach(r=>{{stratMap[r.time]=r.value;}});
+  bhMap={{}};d.bh.forEach(r=>{{bhMap[r.time]=r.value;}});
+  chart.timeScale().fitContent();
+}}
+
+// initialise with monthly
+setAgg('M', document.querySelector('.abtn.active'));
+
+chart.subscribeCrosshairMove(param=>{{
+  const t=param.time; if(!t) return;
+  document.getElementById('eq-strat').textContent=fmtDollar(stratMap[t]);
+  document.getElementById('eq-bh').textContent=fmtDollar(bhMap[t]);
+}});
+window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
+</script></body></html>"""
+
+    components.html(eq_html, height=420, scrolling=False)
 
     # ---- Chart 1: TradingView Lightweight Charts ----
     mp = config.ma_type.lower()
@@ -345,7 +460,7 @@ if run_btn:
     <span style="font-weight:700;font-size:13px;">{ticker}</span>
     <span class="leg-item">O&nbsp;<span id="val-o" class="val">—</span>&nbsp;H&nbsp;<span id="val-h" class="val">—</span>&nbsp;L&nbsp;<span id="val-l" class="val">—</span>&nbsp;C&nbsp;<span id="val-c" class="val">—</span></span>
     <span class="leg-item"><span class="leg-swatch" style="background:#2962ff"></span>{config.ma_type}{config.ema_fast}&nbsp;<span id="val-ef" class="val" style="color:#2962ff">—</span></span>
-    <span class="leg-item"><span class="leg-swatch" style="background:#ff9800"></span>{config.ma_type}{config.ema_slow}&nbsp;<span id="val-es" class="val" style="color:#ff9800">—</span></span>
+    <span class="leg-item"><span class="leg-swatch" style="background:#ffe066"></span>{config.ma_type}{config.ema_slow}&nbsp;<span id="val-es" class="val" style="color:#ffe066">—</span></span>
     <span class="leg-item"><span class="leg-swatch" style="background:#ab47bc"></span>{config.ma_type}100&nbsp;<span id="val-e100" class="val" style="color:#ab47bc">—</span></span>
     <span class="leg-item"><span class="leg-swatch" style="background:#ff7043"></span>{config.ma_type}200&nbsp;<span id="val-e200" class="val" style="color:#ff7043">—</span></span>
     <span class="leg-item" style="color:#26a69a">▲ Entry</span>
@@ -371,9 +486,9 @@ volSeries.setData({json.dumps(volume_data)});
 chart.priceScale('volume').applyOptions({{scaleMargins:{{top:0.82,bottom:0.00}}}});
 const emaFast=chart.addLineSeries({{color:'#2962ff',lineWidth:1,priceScaleId:'right',priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
 emaFast.setData({json.dumps(ema_fast_data)});
-const emaSlow=chart.addLineSeries({{color:'#ff9800',lineWidth:1,priceScaleId:'right',priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
+const emaSlow=chart.addLineSeries({{color:'#ffe066',lineWidth:1,priceScaleId:'right',priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
 emaSlow.setData({json.dumps(ema_slow_data)});
-const ema100=chart.addLineSeries({{color:'#ab47bc',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,priceScaleId:'right',priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
+const ema100=chart.addLineSeries({{color:'#ab47bc',lineWidth:1,priceScaleId:'right',priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
 ema100.setData({json.dumps(ema100_data)});
 const ema200=chart.addLineSeries({{color:'#ff7043',lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false}});
 ema200.setData({json.dumps(ema200_data)});
@@ -418,12 +533,12 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
             fill="tozeroy",
             fillcolor="rgba(0,128,0,0.10)",
         ))
-        fig_cum.add_hline(y=0, line_color="black", line_width=0.8)
         fig_cum.update_layout(
-            title="Cumulative P&L ($)",
+            title="Cumulative P&L ($) — Log Scale",
             height=340,
             xaxis_title="Trade Exit Date",
             yaxis_title="P&L ($)",
+            yaxis_type="log",
             margin=dict(t=50, b=40),
         )
         st.plotly_chart(fig_cum, use_container_width=True)
@@ -491,6 +606,71 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
             ],
         }
         st.table(pd.DataFrame(summary_data).set_index("Metric"))
+
+    # -----------------------------------------------------------------------
+    # Annual P&L table
+    # -----------------------------------------------------------------------
+
+    st.divider()
+    st.subheader("Annual P&L")
+
+    # Group trades by exit year (P&L is realized when the trade closes)
+    annual_df = trades_df.copy()
+    annual_df["Exit Year"] = pd.to_datetime(annual_df["Exit Date"]).dt.year
+    annual = (
+        annual_df.groupby("Exit Year")
+        .agg(
+            Trades=("P&L ($)", "count"),
+            Wins=("P&L ($)", lambda x: (x > 0).sum()),
+            Losses=("P&L ($)", lambda x: (x <= 0).sum()),
+            Annual_PnL=("P&L ($)", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"Exit Year": "Year"})
+    )
+
+    # Total Account Value: year-end equity from the equity curve
+    eq_year_end = equity_curve.groupby(equity_curve.index.year).last()
+    annual["Acct_Val"] = annual["Year"].map(eq_year_end)
+
+    # P&L %: annual realized P&L / account equity at start of year
+    annual_pct = {}
+    for _, row in annual.iterrows():
+        yr = row["Year"]
+        # Start-of-year equity = prior year-end equity, or starting capital for the first year
+        prior_years = eq_year_end.loc[eq_year_end.index < yr]
+        start_equity = prior_years.iloc[-1] if len(prior_years) > 0 else equity_curve.iloc[0]
+        annual_pct[yr] = row["Annual_PnL"] / start_equity * 100 if start_equity > 0 else 0.0
+    annual["P&L %"] = annual["Year"].map(annual_pct).round(1).astype(str) + "%"
+
+    # Buy & Hold annual return %: year-end vs prior year-end equity
+    bh_year_end = bh_equity.groupby(bh_equity.index.year).last()
+    bh_annual_ret = {}
+    bh_years_sorted = sorted(bh_year_end.index)
+    for i, yr in enumerate(bh_years_sorted):
+        prior_val = bh_year_end.iloc[i - 1] if i > 0 else bh_equity.iloc[0]
+        bh_annual_ret[yr] = (bh_year_end[yr] - prior_val) / prior_val * 100
+    annual[f"B&H {ticker} P&L %"] = annual["Year"].map(bh_annual_ret).round(1).astype(str) + "%"
+
+    annual["Win Rate"] = (annual["Wins"] / annual["Trades"] * 100).round(1).astype(str) + "%"
+    annual["Annual P&L ($)"] = annual["Annual_PnL"].apply(lambda v: f"${v:,.0f}")
+    annual["Total Account Value"] = annual["Acct_Val"].apply(lambda v: f"${v:,.0f}")
+    annual = annual.drop(columns=["Annual_PnL", "Acct_Val"])
+    bh_col = f"B&H {ticker} P&L %"
+    annual = annual[["Year", "Trades", "Wins", "Losses", "Win Rate", "Annual P&L ($)", "P&L %", "Total Account Value", bh_col]]
+
+    def colour_annual_pnl(val):
+        if isinstance(val, str) and (val.startswith("$") or val.endswith("%")):
+            num_str = val.replace("$", "").replace(",", "").replace("%", "")
+            try:
+                num = float(num_str)
+                return "color: green" if num > 0 else ("color: red" if num < 0 else "")
+            except ValueError:
+                pass
+        return ""
+
+    styled_annual = annual.style.map(colour_annual_pnl, subset=["Annual P&L ($)", "P&L %", bh_col])
+    st.dataframe(styled_annual, use_container_width=True, hide_index=True)
 
     # -----------------------------------------------------------------------
     # Trade log

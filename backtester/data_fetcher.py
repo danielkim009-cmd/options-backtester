@@ -69,6 +69,7 @@ def fetch_data(
     ema_fast: int = 21,
     ema_slow: int = 50,
     cache_dir: str = "data",
+    extra_periods: list = None,
 ) -> pd.DataFrame:
     """
     Download historical OHLCV data and compute a best-available IV estimate.
@@ -84,10 +85,15 @@ def fetch_data(
     Path(cache_dir).mkdir(exist_ok=True)
     cache_file = Path(cache_dir) / f"{ticker}_{start}_{end}.parquet"
 
-    REQUIRED_COLUMNS = {"ema100", "ema200", "sma100", "sma200", "iv"}
+    all_periods = sorted(set([ema_fast, ema_slow, 100, 200] + (extra_periods or [])))
+    required_cols = set()
+    for s in all_periods:
+        required_cols.add(f"ema{s}")
+        required_cols.add(f"sma{s}")
+    required_cols.add("iv")
     if cache_file.exists():
         cached = pd.read_parquet(cache_file)
-        if REQUIRED_COLUMNS.issubset(cached.columns):
+        if required_cols.issubset(cached.columns):
             return cached
         # Cache is stale (missing columns) — delete and re-fetch
         cache_file.unlink()
@@ -149,12 +155,14 @@ def fetch_data(
     df["iv"] = df["iv"].clip(lower=0.05, upper=3.00)
 
     # --- Technical indicators (both EMA and SMA computed; engine picks based on config) ---
-    for span in [ema_fast, ema_slow, 100, 200]:
+    all_periods = sorted(set([ema_fast, ema_slow, 100, 200] + (extra_periods or [])))
+    for span in all_periods:
         df[f"ema{span}"] = df["close"].ewm(span=span, adjust=False).mean()
         df[f"sma{span}"] = df["close"].rolling(window=span).mean()
 
-    df = df.dropna(subset=[f"ema{ema_fast}", f"ema{ema_slow}", "ema100", "ema200",
-                            f"sma{ema_fast}", f"sma{ema_slow}", "sma100", "sma200", "iv"])
+
+    dropna_cols = [f"ema{s}" for s in all_periods] + [f"sma{s}" for s in all_periods] + ["iv"]
+    df = df.dropna(subset=dropna_cols)
 
     df.to_parquet(cache_file)
     print(f"Cached to {cache_file}\n")
