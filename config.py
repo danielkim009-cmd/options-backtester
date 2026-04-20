@@ -28,7 +28,7 @@ class BacktestConfig:
 
     # Exit rules
     exit_below_ema: bool = True      # Close trade if price crosses below the exit EMA
-    exit_ema_period: int = 150       # EMA period for exit condition
+    exit_ema_period: int = 180       # EMA period for exit condition
     use_stop_loss: bool = False      # Close trade if loss exceeds stop_loss_multiple × credit
     stop_loss_multiple: float = 2.0  # 2.0 = exit when loss = 200% of credit received
 

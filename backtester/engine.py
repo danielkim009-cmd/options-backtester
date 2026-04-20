@@ -37,6 +37,8 @@ def add_signals(
       2. Entry price > slow MA   (stays above MA50)
       3. Fast MA > slow MA       (uptrend confirmed)
       4. Slow MA > MA100         (broader uptrend confirmed)
+      5. MA100 > MA200           (long-term trend is bullish)
+      6. EMA21 >= EMA21[7d/14d/21d ago], EMA21 > EMA21[30d ago]  (EMA21 is rising)
 
     Condition B — EMA200 crossover (first day only):
       1. Close crosses above EMA200 (previous close was at or below EMA200)
@@ -52,11 +54,19 @@ def add_signals(
 
     # Condition A: pullback zone — first bar only
     # Use intraday low for the EMA21 touch so that even a wick into the zone qualifies.
+    ema21_rising = (
+        (df[ef] >= df[ef].shift(7)) &
+        (df[ef] >= df[ef].shift(14)) &
+        (df[ef] >= df[ef].shift(21)) &
+        (df[ef] > df[ef].shift(30))
+    )
     in_zone = (
         (df["low"] <= df[ef]) &        # low touches or dips below EMA21 intraday
         (price > df[es]) &             # entry price stays above EMA50
         (df[ef] > df[es]) &
-        (df[es] > df[f"{p}100"])
+        (df[es] > df[f"{p}100"]) &
+        (df[f"{p}100"] > df[e200]) &   # long-term trend is bullish
+        ema21_rising                   # EMA21 is rising over 7, 14, 21 days
     )
     signal_a = in_zone & ~in_zone.shift(1).astype(bool).fillna(False)
 

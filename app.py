@@ -38,7 +38,7 @@ st.set_page_config(
 
 st.title("📉 Bull Put Spread Backtester")
 st.caption(
-    "Entry A: low ≤ EMA21, price > EMA50, EMA21 > EMA50, EMA50 > EMA100 (first day of pullback zone)  •  "
+    "Entry A: low ≤ EMA21, {Close|Low} > EMA50, EMA21 > EMA50, EMA50 > EMA100, EMA100 > EMA200, EMA21 ≥ EMA21[7d/14d/21d ago] & > EMA21[30d ago] (first day of pullback zone)  •  "
     "Entry B: close crosses above EMA200, EMA100 > EMA200, high > EMA21  •  "
     "Exit: profit target **or** DTE stop **or** price below EMA200 (optional)  •  "
     "IV proxy: VIX (SPY) / 30-day HV×1.1 (individual stocks)"
@@ -54,8 +54,10 @@ with st.sidebar:
     ticker = st.text_input("Ticker", value="SPY").upper().strip()
 
     col1, col2 = st.columns(2)
-    start_date = col1.date_input("Start Date", value=pd.Timestamp("2006-04-03"))
-    end_date   = col2.date_input("End Date",   value=pd.Timestamp("2026-03-31"))
+    start_date = col1.date_input("Start Date", value=pd.Timestamp("2006-01-03"))
+    _today = pd.Timestamp.today().normalize()
+    _last_trading_day = _today - pd.Timedelta(days=max(0, _today.weekday() - 4))
+    end_date   = col2.date_input("End Date",   value=_last_trading_day)
 
     st.divider()
     ma_type     = st.radio("Moving Average Type", ["EMA", "SMA"], horizontal=True)
@@ -79,7 +81,7 @@ with st.sidebar:
     )
     exit_ema_period = st.number_input(
         "Exit EMA Period",
-        min_value=10, max_value=500, value=150, step=10,
+        min_value=10, max_value=500, value=180, step=10,
         disabled=not exit_below_ema,
         help="EMA period for the exit condition above.",
     )
@@ -165,7 +167,20 @@ if run_btn:
     except Exception:
         name = ticker
 
+    # Persist results so filter interactions don't wipe the page
+    st.session_state["bt_results"] = dict(
+        trades=trades, equity_curve=equity_curve, df=df, config=config, name=name
+    )
+
+if "bt_results" in st.session_state:
+    r            = st.session_state["bt_results"]
+    trades       = r["trades"]
+    equity_curve = r["equity_curve"]
+    df           = r["df"]
+    config       = r["config"]
+    name         = r["name"]
     st.markdown(f"## {name} ({ticker})")
+    st.caption(f"Backtest period: **{config.start_date}** — **{config.end_date}**")
 
     ma = config.ma_type
     ef = config.ema_fast
@@ -189,10 +204,13 @@ if run_btn:
         exit_parts.append(sl_line)
 
     st.markdown(
-        f"**Entry A ({ep}):** {ep} ≤ {ma}{ef} &nbsp;•&nbsp; "
-        f"price > {ma}{es} &nbsp;•&nbsp; "
+        f"**Entry A:** low ≤ {ma}{ef} &nbsp;•&nbsp; "
+        f"{ep} > {ma}{es} &nbsp;•&nbsp; "
         f"{ma}{ef} > {ma}{es} &nbsp;•&nbsp; "
-        f"{ma}{es} > {ma}100 &nbsp;*(first day of pullback zone)*"
+        f"{ma}{es} > {ma}100 &nbsp;•&nbsp; "
+        f"{ma}100 > {ma}200 &nbsp;•&nbsp; "
+        f"{ma}{ef} ≥ {ma}{ef}[7d/14d/21d ago] &nbsp;•&nbsp; "
+        f"{ma}{ef} > {ma}{ef}[30d ago] &nbsp;*(first day of pullback zone)*"
     )
     st.markdown(
         f"**Entry B ({ep}):** close crosses above {ma}200 &nbsp;•&nbsp; "
@@ -522,26 +540,78 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
     col_l, col_r = st.columns([2, 1])
 
     with col_l:
-        fig_cum = go.Figure()
-        fig_cum.add_trace(go.Scatter(
-            x=exit_dates,
-            y=cum_pnl,
-            mode="lines+markers",
-            name="Cumulative P&L",
-            line=dict(color="green", width=2),
-            marker=dict(size=5),
-            fill="tozeroy",
-            fillcolor="rgba(0,128,0,0.10)",
-        ))
-        fig_cum.update_layout(
-            title="Cumulative P&L ($) — Log Scale",
-            height=340,
-            xaxis_title="Trade Exit Date",
-            yaxis_title="P&L ($)",
-            yaxis_type="log",
-            margin=dict(t=50, b=40),
-        )
-        st.plotly_chart(fig_cum, use_container_width=True)
+        # Deduplicate by date (last trade wins if multiple exit same day)
+        cum_pnl_map = {}
+        for d, v in zip(exit_dates, cum_pnl):
+            cum_pnl_map[d.strftime("%Y-%m-%d")] = round(float(v), 2)
+        cum_pnl_tv = [{"time": t, "value": v} for t, v in sorted(cum_pnl_map.items())]
+
+        cum_pnl_tv_log = [d for d in cum_pnl_tv if d["value"] > 0]
+
+        cum_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<style>
+  html,body{{margin:0;padding:0;background:#131722;}}
+  #cum-container{{position:relative;width:100%;}}
+  #cum-legend{{position:absolute;top:8px;left:12px;z-index:10;
+    font-family:-apple-system,BlinkMacSystemFont,'Trebuchet MS',sans-serif;
+    font-size:12px;color:#d1d4dc;background:rgba(19,23,34,0.88);
+    padding:5px 10px;border-radius:4px;display:flex;gap:12px;align-items:center;pointer-events:none;}}
+  .val{{font-weight:600;}}
+</style></head><body>
+<div id="cum-container">
+  <div id="cum-legend">
+    <span style="font-weight:700;font-size:13px;">Cumulative P&amp;L &nbsp;|&nbsp; Log Scale</span>
+    <span><span class="leg-swatch" style="display:inline-block;width:12px;height:3px;background:#26a69a;border-radius:2px;margin-right:4px;"></span><span id="cum-val" class="val" style="color:#26a69a">—</span></span>
+    <span style="color:#888;font-size:11px;">(negative values hidden)</span>
+  </div>
+  <div id="cum-chart"></div>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const W=document.documentElement.clientWidth;
+const chart=LightweightCharts.createChart(document.getElementById('cum-chart'),{{
+  width:W,height:340,
+  layout:{{background:{{type:'solid',color:'#131722'}},textColor:'#d1d4dc',fontSize:12}},
+  grid:{{vertLines:{{color:'#1e222d'}},horzLines:{{color:'#1e222d'}}}},
+  crosshair:{{mode:LightweightCharts.CrosshairMode.Normal}},
+  rightPriceScale:{{borderColor:'#2a2e39',mode:LightweightCharts.PriceScaleMode.Logarithmic}},
+  timeScale:{{borderColor:'#2a2e39',timeVisible:true,secondsVisible:false,rightOffset:5,barSpacing:8,minBarSpacing:2}},
+  handleScroll:{{mouseWheel:true,pressedMouseMove:true}},
+  handleScale:{{mouseWheel:true,pinch:true}},
+}});
+
+const areaSeries=chart.addAreaSeries({{
+  lineColor:'#26a69a',
+  lineWidth:2,
+  topColor:'rgba(38,166,154,0.25)',
+  bottomColor:'rgba(38,166,154,0.02)',
+  priceLineVisible:false,
+  lastValueVisible:false,
+  priceFormat:{{type:'custom',formatter:v=>('$'+Math.round(v).toLocaleString('en-US'))}},
+  crosshairMarkerVisible:true,
+  crosshairMarkerRadius:4,
+}});
+const data={json.dumps(cum_pnl_tv_log)};
+areaSeries.setData(data);
+chart.timeScale().fitContent();
+
+const valMap={{}};{json.dumps(cum_pnl_tv)}.forEach(d=>{{valMap[d.time]=d.value;}});
+function fmtDollar(v){{
+  const sign=v<0?'-':'';
+  return sign+'$'+Math.abs(v).toLocaleString('en-US',{{minimumFractionDigits:0,maximumFractionDigits:0}});
+}}
+chart.subscribeCrosshairMove(param=>{{
+  const t=param.time; if(!t) return;
+  const v=valMap[t];
+  if(v===undefined) return;
+  const el=document.getElementById('cum-val');
+  el.textContent=fmtDollar(v);
+  el.style.color=v>=0?'#26a69a':'#ef5350';
+}});
+window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.documentElement.clientWidth}});}});
+</script></body></html>"""
+
+        components.html(cum_html, height=360, scrolling=False)
 
     with col_r:
         bar_colors = ["green" if p > 0 else "red" for p in pnls]
@@ -624,6 +694,8 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
             Wins=("P&L ($)", lambda x: (x > 0).sum()),
             Losses=("P&L ($)", lambda x: (x <= 0).sum()),
             Annual_PnL=("P&L ($)", "sum"),
+            Avg_Win_Pct=("P&L (% Acct)", lambda x: x[x > 0].mean()),
+            Avg_Loss_Pct=("P&L (% Acct)", lambda x: x[x <= 0].mean()),
         )
         .reset_index()
         .rename(columns={"Exit Year": "Year"})
@@ -652,12 +724,18 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
         bh_annual_ret[yr] = (bh_year_end[yr] - prior_val) / prior_val * 100
     annual[f"B&H {ticker} P&L %"] = annual["Year"].map(bh_annual_ret).round(1).astype(str) + "%"
 
+    # Alpha: strategy P&L % minus B&H return % (both as raw floats)
+    annual["Alpha_raw"] = annual["Year"].map(annual_pct) - annual["Year"].map(bh_annual_ret)
+    annual["Alpha %"] = annual["Alpha_raw"].round(1).astype(str) + "%"
+
     annual["Win Rate"] = (annual["Wins"] / annual["Trades"] * 100).round(1).astype(str) + "%"
+    annual["Avg Win %"] = annual["Avg_Win_Pct"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "—")
+    annual["Avg Loss %"] = annual["Avg_Loss_Pct"].apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "—")
     annual["Annual P&L ($)"] = annual["Annual_PnL"].apply(lambda v: f"${v:,.0f}")
     annual["Total Account Value"] = annual["Acct_Val"].apply(lambda v: f"${v:,.0f}")
-    annual = annual.drop(columns=["Annual_PnL", "Acct_Val"])
+    annual = annual.drop(columns=["Annual_PnL", "Acct_Val", "Avg_Win_Pct", "Avg_Loss_Pct", "Alpha_raw"])
     bh_col = f"B&H {ticker} P&L %"
-    annual = annual[["Year", "Trades", "Wins", "Losses", "Win Rate", "Annual P&L ($)", "P&L %", "Total Account Value", bh_col]]
+    annual = annual[["Year", "Trades", "Wins", "Losses", "Win Rate", "Avg Win %", "Avg Loss %", "Annual P&L ($)", "P&L %", bh_col, "Alpha %", "Total Account Value"]]
 
     def colour_annual_pnl(val):
         if isinstance(val, str) and (val.startswith("$") or val.endswith("%")):
@@ -669,7 +747,7 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
                 pass
         return ""
 
-    styled_annual = annual.style.map(colour_annual_pnl, subset=["Annual P&L ($)", "P&L %", bh_col])
+    styled_annual = annual.style.map(colour_annual_pnl, subset=["Annual P&L ($)", "P&L %", "Avg Win %", "Avg Loss %", bh_col, "Alpha %"])
     st.dataframe(styled_annual, use_container_width=True, hide_index=True)
 
     # -----------------------------------------------------------------------
@@ -679,6 +757,32 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
     st.divider()
     st.subheader("Trade Log")
 
+    # --- Inline filter row (collapsed labels so inputs sit flush like column header filters) ---
+    log_years   = sorted(pd.to_datetime(trades_df["Exit Date"]).dt.year.unique().tolist())
+    log_reasons = sorted(trades_df["Exit Reason"].dropna().unique().tolist())
+
+    kw = dict(label_visibility="collapsed")
+    fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1.4, 1.4, 1, 1.4])
+    fc1.markdown("<div style='padding-top:4px;font-size:12px;color:grey'>Filters:</div>", unsafe_allow_html=True)
+    sel_entry  = fc2.text_input("Entry Date",  placeholder="Entry date (e.g. 2023)", key="log_entry",  **kw)
+    sel_exit   = fc3.text_input("Exit Date",   placeholder="Exit date (e.g. 2024)",  key="log_exit",   **kw)
+    sel_result = fc4.selectbox("Result",       options=["All", "Wins", "Losses"],                      key="log_result", **kw)
+    sel_reason = fc5.selectbox("Exit Reason",  options=["All"] + log_reasons,                          key="log_reason", **kw)
+
+    filtered_df = trades_df.copy()
+    if sel_entry:
+        filtered_df = filtered_df[filtered_df["Entry Date"].str.contains(sel_entry, case=False, na=False)]
+    if sel_exit:
+        filtered_df = filtered_df[filtered_df["Exit Date"].str.contains(sel_exit, case=False, na=False)]
+    if sel_result == "Wins":
+        filtered_df = filtered_df[filtered_df["P&L ($)"] > 0]
+    elif sel_result == "Losses":
+        filtered_df = filtered_df[filtered_df["P&L ($)"] <= 0]
+    if sel_reason != "All":
+        filtered_df = filtered_df[filtered_df["Exit Reason"] == sel_reason]
+
+    st.caption(f"{len(filtered_df)} of {len(trades_df)} trades shown")
+
     def colour_pnl(val):
         if isinstance(val, (int, float)):
             colour = "color: green" if val > 0 else ("color: red" if val < 0 else "")
@@ -686,14 +790,14 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
         return ""
 
     styled = (
-        trades_df.style
+        filtered_df.style
         .map(colour_pnl, subset=["P&L ($)", "P&L (% Acct)"])
         .format({"P&L ($)": "${:,.2f}", "P&L (% Acct)": "{:.2f}"})
     )
-    log_height = min(len(trades_df), 20) * 35 + 38
+    log_height = min(len(filtered_df), 20) * 35 + 38
     st.dataframe(styled, use_container_width=True, hide_index=True, height=log_height)
 
-    csv = trades_df.to_csv(index=False).encode("utf-8")
+    csv = filtered_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇ Download Trade Log (CSV)",
         data=csv,
@@ -701,5 +805,5 @@ window.addEventListener('resize',()=>{{chart.applyOptions({{width:document.docum
         mime="text/csv",
     )
 
-else:
+elif "bt_results" not in st.session_state:
     st.info("Configure parameters in the sidebar and click **▶ Run Backtest** to begin.")
