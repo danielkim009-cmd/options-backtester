@@ -393,9 +393,11 @@ const chart=LightweightCharts.createChart(document.getElementById('eq-chart'),{{
   handleScale:{{mouseWheel:true,pinch:true}},
 }});
 
+function fmtAxis(v){{return '$'+Math.round(v).toLocaleString('en-US');}}
 const stratSeries=chart.addLineSeries({{
   color:'#26a69a',lineWidth:2,
   priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:true,
+  priceFormat:{{type:'custom',formatter:fmtAxis}},
 }});
 stratSeries.createPriceLine({{
   price:{total_capital},color:'#888888',lineWidth:1,
@@ -405,6 +407,7 @@ stratSeries.createPriceLine({{
 const bhSeries=chart.addLineSeries({{
   color:'#4c78a8',lineWidth:2,
   priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:true,
+  priceFormat:{{type:'custom',formatter:fmtAxis}},
 }});
 
 let stratMap={{}}, bhMap={{}};
