@@ -82,7 +82,7 @@ with st.sidebar:
     )
     exit_ema_period = st.number_input(
         "Exit EMA Period",
-        min_value=10, max_value=500, value=180, step=10,
+        min_value=10, max_value=500, value=200, step=10,
         disabled=not exit_below_ema,
         help="EMA period for the exit condition above.",
     )

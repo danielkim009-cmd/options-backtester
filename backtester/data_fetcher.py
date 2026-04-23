@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -50,9 +52,20 @@ HV_PREMIUM = {
 DEFAULT_HV_PREMIUM = 1.30   # conservative default for unknown tickers
 
 
+def _yf_download(symbol: str, start: str, end: str, retries: int = 3) -> pd.DataFrame:
+    """yf.download with exponential back-off retry (handles transient rate-limits)."""
+    for attempt in range(retries):
+        raw = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
+        if not raw.empty:
+            return raw
+        if attempt < retries - 1:
+            time.sleep(2 ** attempt)   # 1 s, 2 s, …
+    return raw   # empty after all retries
+
+
 def _fetch_series(symbol: str, start: str, end: str) -> pd.Series:
     """Download a single price series from yfinance; return Close as a Series."""
-    raw = yf.download(symbol, start=start, end=end, auto_adjust=True, progress=False)
+    raw = _yf_download(symbol, start, end)
     if raw.empty:
         return pd.Series(dtype=float)
     if isinstance(raw.columns, pd.MultiIndex):
@@ -102,7 +115,7 @@ def fetch_data(
 
     # --- Price data ---
     print(f"Downloading {ticker} price data...")
-    raw = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    raw = _yf_download(ticker, start, end)
     if raw.empty:
         raise ValueError(f"No price data returned for {ticker}")
     if isinstance(raw.columns, pd.MultiIndex):
