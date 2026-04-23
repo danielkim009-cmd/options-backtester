@@ -39,7 +39,7 @@ st.set_page_config(
 
 st.title("📉 Bull Put Spread Backtester")
 st.caption(
-    "Entry A: low ≤ EMA21, {Close|Low} > EMA50, EMA21 > EMA50, EMA50 > EMA100, EMA100 > EMA200, EMA21 ≥ EMA21[7d/14d/21d ago] & > EMA21[30d ago] (first day of pullback zone)  •  "
+    "Entry A: low ≤ EMA21×(1+buffer), {Close|Low} > EMA50, EMA21 > EMA50, EMA50 > EMA100, EMA100 > EMA200, EMA21 ≥ EMA21[7d/14d/21d ago] & > EMA21[30d ago] (first day of pullback zone)  •  "
     "Entry B: close crosses above EMA200, EMA100 > EMA200, high > EMA21  •  "
     "Exit: profit target **or** DTE stop **or** price below EMA200 (optional)  •  "
     "IV proxy: VIX (SPY) / 30-day HV×1.1 (individual stocks)"
@@ -55,7 +55,7 @@ with st.sidebar:
     ticker = st.text_input("Ticker", value="SPY").upper().strip()
 
     col1, col2 = st.columns(2)
-    start_date = col1.date_input("Start Date", value=pd.Timestamp("2006-01-03"))
+    start_date = col1.date_input("Start Date", value=pd.Timestamp("2016-01-04"))
     _today = pd.Timestamp.today().normalize()
     _last_trading_day = _today - pd.Timedelta(days=max(0, _today.weekday() - 4))
     end_date   = col2.date_input("End Date",   value=_last_trading_day)
@@ -64,6 +64,12 @@ with st.sidebar:
     ma_type     = st.radio("Moving Average Type", ["EMA", "SMA"], horizontal=True)
     entry_price = st.radio("Entry Signal Price", ["Close", "Low"], horizontal=True,
                            help="'Close' triggers on a closing price pullback; 'Low' triggers when the intraday low touches the zone.")
+    _ema_buffer_opts = {"At or below EMA21 (0%)": 0.0, "Within 1% above EMA21": 0.01, "Within 2% above EMA21": 0.02}
+    entry_a_ema_buffer = _ema_buffer_opts[st.selectbox(
+        "Entry A — Low threshold",
+        list(_ema_buffer_opts.keys()),
+        help="How far above EMA21 the intraday low may be and still qualify for Entry A. '0%' = must touch or dip below EMA21.",
+    )]
 
     st.divider()
     st.subheader("Options")
@@ -133,6 +139,7 @@ if run_btn:
         end_date=str(end_date),
         ma_type=ma_type,
         entry_price=entry_price.lower(),
+        entry_a_ema_buffer=entry_a_ema_buffer,
         entry_dte=entry_dte,
         exit_dte=exit_dte,
         profit_target=profit_target,

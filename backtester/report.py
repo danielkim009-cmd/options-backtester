@@ -267,7 +267,7 @@ tr:hover td {{ background: #1a1e2b; }}
 <p class="caption">Backtest period: <strong>{config.start_date}</strong> — <strong>{config.end_date}</strong> &nbsp;|&nbsp; Generated: {gen_time}</p>
 
 <div class="strategy-desc">
-  <strong>Entry A:</strong> low ≤ {ma}{ef} &nbsp;•&nbsp; {ep} &gt; {ma}{es} &nbsp;•&nbsp;
+  <strong>Entry A:</strong> low ≤ {ma}{ef}{"×" + f"(1+{config.entry_a_ema_buffer:.0%})" if config.entry_a_ema_buffer else ""} &nbsp;•&nbsp; {ep} &gt; {ma}{es} &nbsp;•&nbsp;
   {ma}{ef} &gt; {ma}{es} &nbsp;•&nbsp; {ma}{es} &gt; {ma}100 &nbsp;•&nbsp;
   {ma}100 &gt; {ma}200 &nbsp;•&nbsp; {ma}{ef} ≥ {ma}{ef}[7d/14d/21d ago] &nbsp;•&nbsp;
   {ma}{ef} &gt; {ma}{ef}[30d ago] <em>(first day of pullback zone)</em><br>

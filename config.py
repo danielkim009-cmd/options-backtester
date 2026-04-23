@@ -13,6 +13,7 @@ class BacktestConfig:
     entry_price:    str = "close" # "close" or "low"
     ema_fast: int = 21
     ema_slow: int = 50
+    entry_a_ema_buffer: float = 0.0  # Allow low up to this % above EMA21 (0.0=touch, 0.01=1%, 0.02=2%)
 
     # Options settings
     entry_dte: int = 45          # Target DTE at entry

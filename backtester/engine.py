@@ -28,12 +28,13 @@ def add_signals(
     ema_slow: int,
     ma_type: str = "EMA",
     entry_price: str = "close",
+    entry_a_ema_buffer: float = 0.0,
 ) -> pd.DataFrame:
     """
     Add a 'signal' column that is True when EITHER entry condition is met.
 
     Condition A — Pullback zone (first day only):
-      1. Intraday low <= fast MA (low touches or dips below EMA21)
+      1. Intraday low <= fast MA × (1 + entry_a_ema_buffer)  (low touches/enters the zone)
       2. Entry price > slow MA   (stays above MA50)
       3. Fast MA > slow MA       (uptrend confirmed)
       4. Slow MA > MA100         (broader uptrend confirmed)
@@ -61,7 +62,7 @@ def add_signals(
         (df[ef] > df[ef].shift(30))
     )
     in_zone = (
-        (df["low"] <= df[ef]) &        # low touches or dips below EMA21 intraday
+        (df["low"] <= df[ef] * (1 + entry_a_ema_buffer)) &   # low enters the EMA21 zone
         (price > df[es]) &             # entry price stays above EMA50
         (df[ef] > df[es]) &
         (df[es] > df[f"{p}100"]) &
@@ -265,7 +266,7 @@ def run_backtest(
     trades      : list of all closed PutSpread objects
     equity_curve: daily pd.Series of strategy account value (indexed by trading date)
     """
-    df = add_signals(df, config.ema_fast, config.ema_slow, config.ma_type, config.entry_price)
+    df = add_signals(df, config.ema_fast, config.ema_slow, config.ma_type, config.entry_price, config.entry_a_ema_buffer)
     expiry_dates = get_monthly_expiries(df.index[0], df.index[-1])
 
     account_value  = config.starting_capital
