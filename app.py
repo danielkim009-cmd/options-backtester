@@ -68,6 +68,7 @@ with st.sidebar:
     entry_a_ema_buffer = _ema_buffer_opts[st.selectbox(
         "Entry A — Low threshold",
         list(_ema_buffer_opts.keys()),
+        index=1,
         help="How far above EMA21 the intraday low may be and still qualify for Entry A. '0%' = must touch or dip below EMA21.",
     )]
 
