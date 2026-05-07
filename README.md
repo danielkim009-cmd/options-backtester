@@ -6,6 +6,8 @@ A fully-featured options strategy backtester for **bull put spreads**, built wit
 
 **Live demo: [daniel-options-backtester.streamlit.app](https://daniel-options-backtester.streamlit.app/)**
 
+🎬 **Video Overview** [Watch on YouTube](https://youtu.be/mqgkUJG8nF8?si=mUU63G3wNJji_YWv) — generated with Google NotebookLM
+
 ---
 
 ## Strategy Overview
